@@ -59,5 +59,8 @@ extern void CSNSnapshotPrecommit(PGPROC *proc, TransactionId xid, int nsubxids,
 									TransactionId *subxids);
 extern void CSNSnapshotCommit(PGPROC *proc, TransactionId xid, int nsubxids,
 									TransactionId *subxids);
+extern void CSNSnapshotAssignCsnCurrent(SnapshotCSN snapshot_csn);
+extern SnapshotCSN CSNSnapshotPrepareCurrent(void);
+extern void CSNSnapshotSync(SnapshotCSN remote_csn);
 
 #endif							/* CSN_SNAPSHOT_H */

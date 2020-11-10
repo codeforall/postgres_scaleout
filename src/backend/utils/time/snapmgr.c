@@ -2484,6 +2484,7 @@ ImportCSNSnapshot(SnapshotCSN snapshot_csn)
 	CurrentSnapshot->xmin = xmin; /* defuse SnapshotResetXmin() */
 	CurrentSnapshot->snapshot_csn = snapshot_csn;
 	CurrentSnapshot->imported_snapshot_csn = true;
+	CSNSnapshotSync(snapshot_csn);
 
 	//Assert(TransactionIdPrecedesOrEquals(RecentGlobalXmin, xmin));
 	//Assert(TransactionIdPrecedesOrEquals(RecentGlobalDataXmin, xmin));

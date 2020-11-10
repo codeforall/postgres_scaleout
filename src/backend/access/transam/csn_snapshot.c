@@ -400,6 +400,125 @@ GenerateCSN(bool locked)
 }
 
 /*
+ * CSNSnapshotPrepareCurrent
+ *
+ * Set InDoubt state for currently active transaction and return commit's
+ * global snapshot.
+ */
+SnapshotCSN
+CSNSnapshotPrepareCurrent(void)
+{
+	TransactionId xid = GetCurrentTransactionIdIfAny();
+
+	if (!enable_csn_snapshot)
+		ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("could not prepare transaction for global commit"),
+				errhint("Make sure the configuration parameter \"%s\" is enabled.",
+						"enable_csn_snapshot")));
+
+	if (TransactionIdIsValid(xid))
+	{
+		TransactionId *subxids;
+		int nsubxids = xactGetCommittedChildren(&subxids);
+		CSNLogSetCSN(xid, nsubxids, subxids, InDoubtXidCSN, true);
+	}
+
+	/* Nothing to write if we don't heve xid */
+
+	return GenerateCSN(false);
+}
+
+
+/*
+ * CSNSnapshotAssignCsnCurrent
+ *
+ * Asign SnapshotCSN for currently active transaction. SnapshotCSN is supposedly
+ * maximal among of values returned by CSNSnapshotPrepareCurrent and
+ * pg_global_snapshot_prepare.
+ */
+void
+CSNSnapshotAssignCsnCurrent(SnapshotCSN snapshot_csn)
+{
+	if (!enable_csn_snapshot)
+		ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("could not prepare transaction for global commit"),
+				errhint("Make sure the configuration parameter \"%s\" is enabled.",
+						"enable_csn_snapshot")));
+
+	if (!XidCSNIsNormal(snapshot_csn))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("pg_global_snapshot_assign expects normal snapshot_csn")));
+
+	/* Skip emtpty transactions */
+	if (!TransactionIdIsValid(GetCurrentTransactionIdIfAny()))
+		return;
+
+	/* Set global_csn and defuse ProcArrayEndTransaction from assigning one */
+	pg_atomic_write_u64(&MyProc->assignedXidCsn, snapshot_csn);
+}
+
+/*
+ * CSNSnapshotSync
+ *
+ * Due to time desynchronization on different nodes we can receive snapshot_csn
+ * which is greater than snapshot_csn on this node. To preserve proper isolation
+ * this node needs to wait when such snapshot_csn comes on local clock.
+ *
+ * This should happend relatively rare if nodes have running NTP/PTP/etc.
+ * Complain if wait time is more than SNAP_SYNC_COMPLAIN.
+ */
+void
+CSNSnapshotSync(SnapshotCSN remote_csn)
+{
+	SnapshotCSN	local_csn;
+	SnapshotCSN	delta;
+
+	Assert(enable_csn_snapshot);
+
+	for(;;)
+	{
+		SpinLockAcquire(&csnState->lock);
+		if (csnState->last_max_csn > remote_csn)
+		{
+			/* Everything is fine */
+			SpinLockRelease(&csnState->lock);
+			return;
+		}
+		else if ((local_csn = GenerateCSN(true)) >= remote_csn)
+		{
+			/*
+			 * Everything is fine too, but last_max_csn wasn't updated for
+			 * some time.
+			 */
+			SpinLockRelease(&csnState->lock);
+			return;
+		}
+		SpinLockRelease(&csnState->lock);
+
+		/* Okay we need to sleep now */
+		delta = remote_csn - local_csn;
+		if (delta > SNAP_DESYNC_COMPLAIN)
+			ereport(WARNING,
+				(errmsg("remote global snapshot exceeds ours by more than a second"),
+				 errhint("Consider running NTPd on servers participating in global transaction")));
+
+		/* TODO: report this sleeptime somewhere? */
+		pg_usleep((long) (delta/NSECS_PER_USEC));
+
+		/*
+		 * Loop that checks to ensure that we actually slept for specified
+		 * amount of time.
+		 */
+	}
+
+	Assert(false); /* Should not happend */
+	return;
+}
+
+/*
  * TransactionIdGetXidCSN
  *
  * Get XidCSN for specified TransactionId taking care about special xids,
