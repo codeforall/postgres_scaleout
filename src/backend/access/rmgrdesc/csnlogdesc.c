@@ -39,20 +39,20 @@ csnlog_desc(StringInfo buf, XLogReaderState *record)
 	}
 	else if (info == XLOG_CSN_ASSIGNMENT)
 	{
-		XidCSN csn;
+		CSN csn;
 
-		memcpy(&csn, XLogRecGetData(record), sizeof(XidCSN));
+		memcpy(&csn, XLogRecGetData(record), sizeof(CSN));
 		appendStringInfo(buf, "assign "INT64_FORMAT"", csn);
 	}
-	else if (info == XLOG_CSN_SETXIDCSN)
+	else if (info == XLOG_CSN_SETCSN)
 	{
-		xl_xidcsn_set *xlrec = (xl_xidcsn_set *) rec;
+		xl_csn_set *xlrec = (xl_csn_set *) rec;
 		int			  nsubxids;
 
 		appendStringInfo(buf, "set "INT64_FORMAT" for: %u",
-						 xlrec->xidcsn,
+						 xlrec->csn,
 						 xlrec->xtop);
-		nsubxids = ((XLogRecGetDataLen(record) - MinSizeOfXidCSNSet) /
+		nsubxids = ((XLogRecGetDataLen(record) - MinSizeOfCSNSet) /
 					sizeof(TransactionId));
 		if (nsubxids > 0)
 		{
@@ -61,7 +61,7 @@ csnlog_desc(StringInfo buf, XLogReaderState *record)
 
 			subxids = palloc(sizeof(TransactionId) * nsubxids);
 			memcpy(subxids,
-				   XLogRecGetData(record) + MinSizeOfXidCSNSet,
+				   XLogRecGetData(record) + MinSizeOfCSNSet,
 				   sizeof(TransactionId) * nsubxids);
 			for (i = 0; i < nsubxids; i++)
 				appendStringInfo(buf, ", %u", subxids[i]);
@@ -80,8 +80,8 @@ csnlog_identify(uint8 info)
 		case XLOG_CSN_ASSIGNMENT:
 			id = "ASSIGNMENT";
 			break;
-		case XLOG_CSN_SETXIDCSN:
-			id = "SETXIDCSN";
+		case XLOG_CSN_SETCSN:
+			id = "SETCSN";
 			break;
 		case XLOG_CSN_ZEROPAGE:
 			id = "ZEROPAGE";

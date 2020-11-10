@@ -29,8 +29,8 @@
 #include "access/transam.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
-#include "utils/snapmgr.h"
 #include "storage/shmem.h"
+#include "utils/snapmgr.h"
 
 bool enable_csn_snapshot;
 
@@ -50,7 +50,7 @@ typedef struct CSNshapshotShared
 	bool		csnSnapshotActive;
 } CSNshapshotShared;
 
-CSNshapshotShared *csnShared = NULL;
+CSNshapshotShared *csnShared;
 
 /*
  * Defines for CSNLog page sizes.  A page is the same BLCKSZ as is used
@@ -65,7 +65,7 @@ CSNshapshotShared *csnShared = NULL;
  */
 
 /* We store the commit CSN for each xid */
-#define CSN_LOG_XACTS_PER_PAGE (BLCKSZ / sizeof(XidCSN))
+#define CSN_LOG_XACTS_PER_PAGE (BLCKSZ / sizeof(CSN))
 
 #define TransactionIdToPage(xid)	((xid) / (TransactionId) CSN_LOG_XACTS_PER_PAGE)
 #define TransactionIdToPgIndex(xid) ((xid) % (TransactionId) CSN_LOG_XACTS_PER_PAGE)
@@ -81,19 +81,18 @@ static void ZeroTruncateCSNLogPage(int pageno, bool write_xlog);
 static bool CSNLogPagePrecedes(int page1, int page2);
 static void CSNLogSetPageStatus(TransactionId xid, int nsubxids,
 									  TransactionId *subxids,
-									  XidCSN csn, int pageno);
-static void CSNLogSetCSNInSlot(TransactionId xid, XidCSN csn,
-									  int slotno);
+									  CSN csn, int pageno);
+static void CSNLogSetCSNInSlot(TransactionId xid, CSN csn, int slotno);
 
-static void WriteXidCsnXlogRec(TransactionId xid, int nsubxids,
-					 TransactionId *subxids, XidCSN csn);
+static void WriteCSNXlogRec(TransactionId xid, int nsubxids,
+							TransactionId *subxids, CSN csn);
 static void WriteZeroCSNPageXlogRec(int pageno);
 static void WriteTruncateCSNXlogRec(int pageno);
 
 /*
  * CSNLogSetCSN
  *
- * Record XidCSN of transaction and its subtransaction tree.
+ * Record CSN of transaction and its subtransaction tree.
  *
  * xid is a single xid to set status for. This will typically be the top level
  * transactionid for a top level commit or abort. It can also be a
@@ -106,23 +105,23 @@ static void WriteTruncateCSNXlogRec(int pageno);
  * AbortedCSN for abort cases.
  */
 void
-CSNLogSetCSN(TransactionId xid, int nsubxids,
-					 TransactionId *subxids, XidCSN csn, bool write_xlog)
+CSNLogSetCSN(TransactionId xid, int nsubxids, TransactionId *subxids, CSN csn,
+			 bool write_xlog)
 {
-	int			pageno;
-	int			i = 0;
-	int			offset = 0;
+	int pageno;
+	int i = 0;
+	int offset = 0;
 
 	Assert(TransactionIdIsValid(xid));
 
 	pageno = TransactionIdToPage(xid);		/* get page of parent */
 
 	if(write_xlog)
-		WriteXidCsnXlogRec(xid, nsubxids, subxids, csn);
+		WriteCSNXlogRec(xid, nsubxids, subxids, csn);
 
 	for (;;)
 	{
-		int			num_on_page = 0;
+		int num_on_page = 0;
 
 		while (i < nsubxids && TransactionIdToPage(subxids[i]) == pageno)
 		{
@@ -151,10 +150,10 @@ CSNLogSetCSN(TransactionId xid, int nsubxids,
 static void
 CSNLogSetPageStatus(TransactionId xid, int nsubxids,
 						   TransactionId *subxids,
-						   XidCSN csn, int pageno)
+						   CSN csn, int pageno)
 {
-	int			slotno;
-	int			i;
+	int slotno;
+	int i;
 
 	LWLockAcquire(CSNLogControlLock, LW_EXCLUSIVE);
 
@@ -180,15 +179,15 @@ CSNLogSetPageStatus(TransactionId xid, int nsubxids,
  * Sets the commit status of a single transaction.
  */
 static void
-CSNLogSetCSNInSlot(TransactionId xid, XidCSN csn, int slotno)
+CSNLogSetCSNInSlot(TransactionId xid, CSN csn, int slotno)
 {
-	int			entryno = TransactionIdToPgIndex(xid);
-	XidCSN 		*ptr;
+	int entryno = TransactionIdToPgIndex(xid);
+	CSN *ptr;
 
 	Assert(LWLockHeldByMe(CSNLogControlLock));
 
-	ptr = (XidCSN *) (CsnlogCtl->shared->page_buffer[slotno] + entryno * sizeof(XLogRecPtr));
-
+	ptr = (CSN *) (CsnlogCtl->shared->page_buffer[slotno] +
+														entryno * sizeof(CSN));
 	*ptr = csn;
 }
 
@@ -196,26 +195,24 @@ CSNLogSetCSNInSlot(TransactionId xid, XidCSN csn, int slotno)
  * Interrogate the state of a transaction in the log.
  *
  * NB: this is a low-level routine and is NOT the preferred entry point
- * for most uses; TransactionIdGetXidCSN() in csn_snapshot.c is the
+ * for most uses; TransactionIdGetCSN() in csn_snapshot.c is the
  * intended caller.
  */
-XidCSN
+CSN
 CSNLogGetCSNByXid(TransactionId xid)
 {
-	int			pageno = TransactionIdToPage(xid);
-	int			entryno = TransactionIdToPgIndex(xid);
-	int			slotno;
-	XidCSN *ptr;
-	XidCSN	xid_csn;
+	int pageno = TransactionIdToPage(xid);
+	int entryno = TransactionIdToPgIndex(xid);
+	int slotno;
+	CSN csn;
 
 	/* lock is acquired by SimpleLruReadPage_ReadOnly */
 	slotno = SimpleLruReadPage_ReadOnly(CsnlogCtl, pageno, xid);
-	ptr = (XidCSN *) (CsnlogCtl->shared->page_buffer[slotno] + entryno * sizeof(XLogRecPtr));
-	xid_csn = *ptr;
-
+	csn = *(CSN *) (CsnlogCtl->shared->page_buffer[slotno] +
+														entryno * sizeof(CSN));
 	LWLockRelease(CSNLogControlLock);
 
-	return xid_csn;
+	return csn;
 }
 
 /*
@@ -252,6 +249,8 @@ CSNLogShmemInit(void)
 	csnShared = ShmemInitStruct("CSNlog shared",
 									 sizeof(CSNshapshotShared),
 									 &found);
+	if (!found)
+		csnShared->csnSnapshotActive = false;
 }
 
 /*
@@ -485,39 +484,39 @@ csnlogsyncfiletag(const FileTag *ftag, char *path)
 }
 
 void
-WriteAssignCSNXlogRec(XidCSN xidcsn)
+WriteAssignCSNXlogRec(CSN csn)
 {
-	XidCSN log_csn = 0;
+	CSN log_csn;
 
-	if(xidcsn > get_last_log_wal_csn())
-	{
-		log_csn = CSNAddByNanosec(xidcsn, 20);
-		set_last_log_wal_csn(log_csn);
-	}
-	else
-	{
+	if (csn <= get_last_log_wal_csn())
 		return;
-	}
+
+	/*
+	 * We log the CSN 5s greater than generated, you can see comments on
+	 * CSN_ASSIGN_TIME_INTERVAL define.
+	 */
+	log_csn = CSNAddByNanosec(csn, CSN_ASSIGN_TIME_INTERVAL);
+	set_last_log_wal_csn(log_csn);
 
 	XLogBeginInsert();
-	XLogRegisterData((char *) (&log_csn), sizeof(XidCSN));
+	XLogRegisterData((char *) (&log_csn), sizeof(CSN));
 	XLogInsert(RM_CSNLOG_ID, XLOG_CSN_ASSIGNMENT);
 }
 
 static void
-WriteXidCsnXlogRec(TransactionId xid, int nsubxids,
-					 TransactionId *subxids, XidCSN csn)
+WriteCSNXlogRec(TransactionId xid, int nsubxids,
+				TransactionId *subxids, CSN csn)
 {
-	xl_xidcsn_set 	xlrec;
+	xl_csn_set xlrec;
 
 	xlrec.xtop = xid;
 	xlrec.nsubxacts = nsubxids;
-	xlrec.xidcsn = csn;
+	xlrec.csn = csn;
 
 	XLogBeginInsert();
-	XLogRegisterData((char *) &xlrec, MinSizeOfXidCSNSet);
+	XLogRegisterData((char *) &xlrec, MinSizeOfCSNSet);
 	XLogRegisterData((char *) subxids, nsubxids * sizeof(TransactionId));
-	XLogInsert(RM_CSNLOG_ID, XLOG_CSN_SETXIDCSN);
+	XLogInsert(RM_CSNLOG_ID, XLOG_CSN_SETCSN);
 }
 
 /*
@@ -553,18 +552,18 @@ csnlog_redo(XLogReaderState *record)
 
 	if (info == XLOG_CSN_ASSIGNMENT)
 	{
-		XidCSN csn;
+		CSN csn;
 
-		memcpy(&csn, XLogRecGetData(record), sizeof(XidCSN));
+		memcpy(&csn, XLogRecGetData(record), sizeof(CSN));
 		LWLockAcquire(CSNLogControlLock, LW_EXCLUSIVE);
 		set_last_max_csn(csn);
 		LWLockRelease(CSNLogControlLock);
 
 	}
-	else if (info == XLOG_CSN_SETXIDCSN)
+	else if (info == XLOG_CSN_SETCSN)
 	{
-		xl_xidcsn_set *xlrec = (xl_xidcsn_set *) XLogRecGetData(record);
-		CSNLogSetCSN(xlrec->xtop, xlrec->nsubxacts, xlrec->xsub, xlrec->xidcsn, false);
+		xl_csn_set *xlrec = (xl_csn_set *) XLogRecGetData(record);
+		CSNLogSetCSN(xlrec->xtop, xlrec->nsubxacts, xlrec->xsub, xlrec->csn, false);
 	}
 	else if (info == XLOG_CSN_ZEROPAGE)
 	{

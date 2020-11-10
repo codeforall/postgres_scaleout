@@ -242,13 +242,13 @@ struct PGPROC
 	dlist_node	lockGroupLink;	/* my member link, if I'm a member */
 
 	/*
-	 * assignedXidCsn holds XidCSN for this transaction.  It is generated
+	 * assignedCSN holds CSN for this transaction.  It is generated
 	 * under a ProcArray lock and later is writter to a CSNLog.  This
 	 * variable defined as atomic only for case of group commit, in all other
 	 * scenarios only backend responsible for this proc entry is working with
 	 * this variable.
 	 */
-	CSN_atomic assignedXidCsn;
+	CSN_atomic assignedCSN;
 
 	/* Original xmin of this backend before csn snapshot was imported */
 	TransactionId originalXmin;

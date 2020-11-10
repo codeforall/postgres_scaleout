@@ -4611,6 +4611,7 @@ InitControlFile(uint64 sysidentifier)
 	ControlFile->track_commit_timestamp = track_commit_timestamp;
 	ControlFile->enable_csn_snapshot = enable_csn_snapshot;
 	ControlFile->data_checksum_version = bootstrap_data_checksum_version;
+	ControlFile->xmin_for_csn = InvalidTransactionId;
 }
 
 static void
@@ -9500,7 +9501,6 @@ CreateRestartPoint(int flags)
 	if (EnableHotStandby)
 	{
 		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
-		TruncateCSNLog(GetOldestTransactionIdConsideredRunning());
 	}
 
 	/* Real work is done, but log and update before releasing lock. */
@@ -9765,6 +9765,9 @@ XLogRestorePoint(const char *rpName)
 static void
 XLogReportParameters(void)
 {
+	TransactionId	xmin_for_csn = InvalidTransactionId;
+
+	xmin_for_csn = ControlFile->xmin_for_csn;
 	if (wal_level != ControlFile->wal_level ||
 		wal_log_hints != ControlFile->wal_log_hints ||
 		MaxConnections != ControlFile->MaxConnections ||
@@ -9806,10 +9809,12 @@ XLogReportParameters(void)
 			XLogFlush(recptr);
 		}
 
-		if (enable_csn_snapshot != ControlFile->enable_csn_snapshot)
-			prepare_csn_env(enable_csn_snapshot);
+		prepare_csn_env(enable_csn_snapshot,
+				enable_csn_snapshot == ControlFile->enable_csn_snapshot,
+				&xmin_for_csn);
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
+		ControlFile->xmin_for_csn = xmin_for_csn;
 		ControlFile->MaxConnections = MaxConnections;
 		ControlFile->max_worker_processes = max_worker_processes;
 		ControlFile->max_wal_senders = max_wal_senders;
@@ -9823,6 +9828,16 @@ XLogReportParameters(void)
 		UpdateControlFile();
 
 		LWLockRelease(ControlFileLock);
+	}
+	else
+	{
+		/*
+		 * When no GUC change, but for xmin_for_csn it should transmit the xmin_for_csn
+		 * from pg_control to csnState->xmin_for_csn. Or it will cause issue when prepare
+		 * transaction exixts and with 'xid-snapshot start  ->  csn-snapshot start  ->
+		 * csn-snapshot start' sequence.
+		 */
+		prepare_csn_env(enable_csn_snapshot, true, &xmin_for_csn);
 	}
 }
 

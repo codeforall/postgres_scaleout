@@ -439,7 +439,7 @@ InitProcess(void)
 	Assert(pg_atomic_read_u32(&MyProc->clogGroupNext) == INVALID_PGPROCNO);
 
 	MyProc->originalXmin = InvalidTransactionId;
-	pg_atomic_init_u64(&MyProc->assignedXidCsn, InProgressXidCSN);
+	pg_atomic_init_u64(&MyProc->assignedCSN, InProgressCSN);
 
 	/*
 	 * Acquire ownership of the PGPROC's latch, so that we can use WaitLatch

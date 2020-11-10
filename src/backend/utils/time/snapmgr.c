@@ -193,8 +193,8 @@ typedef struct SerializedSnapshotData
 	CommandId	curcid;
 	TimestampTz whenTaken;
 	XLogRecPtr	lsn;
-	XidCSN	xid_csn;
-	bool		imported_snapshot_csn;
+	CSN			csn;
+	bool		imported_csn;
 } SerializedSnapshotData;
 
 Size
@@ -2117,8 +2117,8 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	serialized_snapshot.curcid = snapshot->curcid;
 	serialized_snapshot.whenTaken = snapshot->whenTaken;
 	serialized_snapshot.lsn = snapshot->lsn;
-	serialized_snapshot.xid_csn = snapshot->snapshot_csn;
-	serialized_snapshot.imported_snapshot_csn = snapshot->imported_snapshot_csn;
+	serialized_snapshot.csn = snapshot->snapshot_csn;
+	serialized_snapshot.imported_csn = snapshot->imported_csn;
 
 	/*
 	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
@@ -2194,8 +2194,8 @@ RestoreSnapshot(char *start_address)
 	snapshot->whenTaken = serialized_snapshot.whenTaken;
 	snapshot->lsn = serialized_snapshot.lsn;
 	snapshot->snapXactCompletionCount = 0;
-	snapshot->snapshot_csn = serialized_snapshot.xid_csn;
-	snapshot->imported_snapshot_csn = serialized_snapshot.imported_snapshot_csn;
+	snapshot->snapshot_csn = serialized_snapshot.csn;
+	snapshot->imported_csn = serialized_snapshot.imported_csn;
 
 	/* Copy XIDs, if present. */
 	if (serialized_snapshot.xcnt > 0)
@@ -2245,7 +2245,7 @@ XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot)
 {
 	bool in_snapshot;
 
-	if (snapshot->imported_snapshot_csn)
+	if (snapshot->imported_csn)
 	{
 		Assert(get_csnlog_status());
 		/* No point to using snapshot info except CSN */
@@ -2256,7 +2256,7 @@ XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot)
 
 	if (!get_csnlog_status())
 	{
-		Assert(XidCSNIsFrozen(snapshot->snapshot_csn));
+		Assert(CSNIsFrozen(snapshot->snapshot_csn));
 		return in_snapshot;
 	}
 
@@ -2269,17 +2269,7 @@ XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot)
 		return XidInvisibleInCSNSnapshot(xid, snapshot);
 	}
 	else
-	{
-#ifdef USE_ASSERT_CHECKING
-		/* Check that csn snapshot gives the same results as local one */
-		if (XidInvisibleInCSNSnapshot(xid, snapshot))
-		{
-			XidCSN gcsn = TransactionIdGetXidCSN(xid);
-			Assert(XidCSNIsAborted(gcsn) || XidCSNIsInProgress(gcsn));
-		}
-#endif
 		return false;
-	}
 }
 
 /*
@@ -2432,8 +2422,9 @@ ExportCSNSnapshot()
 Datum
 pg_csn_snapshot_export(PG_FUNCTION_ARGS)
 {
-	SnapshotCSN	export_csn = ExportCSNSnapshot();
-	PG_RETURN_UINT64(export_csn);
+	SnapshotCSN csn = ExportCSNSnapshot();
+
+	PG_RETURN_UINT64(csn);
 }
 
 /*
@@ -2483,7 +2474,7 @@ ImportCSNSnapshot(SnapshotCSN snapshot_csn)
 
 	CurrentSnapshot->xmin = xmin; /* defuse SnapshotResetXmin() */
 	CurrentSnapshot->snapshot_csn = snapshot_csn;
-	CurrentSnapshot->imported_snapshot_csn = true;
+	CurrentSnapshot->imported_csn = true;
 	CSNSnapshotSync(snapshot_csn);
 
 	//Assert(TransactionIdPrecedesOrEquals(RecentGlobalXmin, xmin));
@@ -2494,7 +2485,8 @@ ImportCSNSnapshot(SnapshotCSN snapshot_csn)
 Datum
 pg_csn_snapshot_import(PG_FUNCTION_ARGS)
 {
-	SnapshotCSN	snapshot_csn = PG_GETARG_UINT64(0);
-	ImportCSNSnapshot(snapshot_csn);
+	SnapshotCSN csn = PG_GETARG_UINT64(0);
+
+	ImportCSNSnapshot(csn);
 	PG_RETURN_VOID();
 }

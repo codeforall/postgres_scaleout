@@ -1516,10 +1516,10 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	ProcArrayRemove(proc, latestXid);
 
 	/*
-	 * Stamp our transaction with XidCSN in CSNLog.
+	 * Stamp our transaction with CSN in CSNLog.
 	 * Should be called after ProcArrayEndTransaction, but before releasing
-	 * transaction locks, since TransactionIdGetXidCSN relies on
-	 * XactLockTableWait to await xid_csn.
+	 * transaction locks, since TransactionIdGetCSN relies on
+	 * XactLockTableWait to await csn.
 	 */
 	if (isCommit)
 	{
@@ -1527,8 +1527,8 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	}
 	else
 	{
-		Assert(XidCSNIsInProgress(
-				   pg_atomic_read_u64(&proc->assignedXidCsn)));
+		Assert(CSNIsInProgress(
+				   pg_atomic_read_u64(&proc->assignedCSN)));
 	}
 
 	/*
@@ -2544,7 +2544,7 @@ CSNSnapshotPrepareTwophase(const char *gid)
 	ParsePrepareRecord(0, (xl_xact_prepare *)buf, &parsed);
 
 	CSNLogSetCSN(xid, parsed.nsubxacts,
-					parsed.subxacts, InDoubtXidCSN, true);
+					parsed.subxacts, InDoubtCSN, true);
 
 	/* Unlock our GXACT */
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
@@ -2553,21 +2553,21 @@ CSNSnapshotPrepareTwophase(const char *gid)
 
 	pfree(buf);
 
-	return GenerateCSN(false);
+	return GenerateCSN(false, InvalidCSN);
 }
 
 /*
- * TwoPhaseAssignGlobalCsn
+ * CSNSnapshotAssignTwoPhase
  *
  * Asign SnapshotCSN for currently active transaction. SnapshotCSN is supposedly
  * maximal among of values returned by CSNSnapshotPrepareCurrent and
- * pg_global_snapshot_prepare.
+ * pg_csn_snapshot_prepare.
  *
- * This function is a counterpart of GlobalSnapshotAssignCsnCurrent() for
+ * This function is a counterpart of CSNSnapshotAssignCurrent() for
  * twophase transactions.
  */
 static void
-CSNSnapshotAssignCsnTwoPhase(const char *gid, SnapshotCSN snapshot_csn)
+CSNSnapshotAssignTwoPhase(const char *gid, SnapshotCSN csn)
 {
 	GlobalTransaction gxact;
 	PGPROC	   *proc;
@@ -2579,7 +2579,7 @@ CSNSnapshotAssignCsnTwoPhase(const char *gid, SnapshotCSN snapshot_csn)
 				errhint("Make sure the configuration parameter \"%s\" is enabled.",
 						"enable_csn_snapshot")));
 
-	if (!XidCSNIsNormal(snapshot_csn))
+	if (!CSNIsNormal(csn))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("pg_csn_snapshot_assign expects normal snapshot_csn")));
@@ -2591,8 +2591,13 @@ CSNSnapshotAssignCsnTwoPhase(const char *gid, SnapshotCSN snapshot_csn)
 	gxact = LockGXact(gid, GetUserId());
 	proc = &ProcGlobal->allProcs[gxact->pgprocno];
 
+	Assert(0 != csn);
+	/* We do not care the Generate result, we just want to make sure max
+	 * csnState->last_max_csn value.
+	 */
+	GenerateCSN(false, csn);
 	/* Set snapshot_csn and defuse ProcArrayRemove from assigning one. */
-	pg_atomic_write_u64(&proc->assignedXidCsn, snapshot_csn);
+	pg_atomic_write_u64(&proc->assignedCSN, csn);
 
 	/* Unlock our GXACT */
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
@@ -2609,24 +2614,22 @@ Datum
 pg_csn_snapshot_prepare(PG_FUNCTION_ARGS)
 {
 	const char 	*gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	SnapshotCSN	snapshot_csn;
+	SnapshotCSN	csn = CSNSnapshotPrepareTwophase(gid);
 
-	snapshot_csn = CSNSnapshotPrepareTwophase(gid);
-
-	PG_RETURN_INT64(snapshot_csn);
+	PG_RETURN_INT64(csn);
 }
 
 /*
- * SQL interface to CSNSnapshotAssignCsnTwoPhase()
+ * SQL interface to CSNSnapshotAssignTwoPhase()
  *
- * TODO: Rewrite this as COMMIT PREPARED 'gid' SNAPSHOT 'global_csn'
+ * TODO: Rewrite this as COMMIT PREPARED 'gid' SNAPSHOT 'csn'
  */
 Datum
 pg_csn_snapshot_assign(PG_FUNCTION_ARGS)
 {
 	const char *gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	SnapshotCSN	snapshot_csn = PG_GETARG_INT64(1);
+	SnapshotCSN	csn = PG_GETARG_INT64(1);
 
-	CSNSnapshotAssignCsnTwoPhase(gid, snapshot_csn);
+	CSNSnapshotAssignTwoPhase(gid, csn);
 	PG_RETURN_VOID();
 }

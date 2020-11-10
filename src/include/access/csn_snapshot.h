@@ -24,17 +24,19 @@
  */
 typedef pg_atomic_uint64 CSN_atomic;
 
-#define InProgressXidCSN	 	UINT64CONST(0x0)
-#define AbortedXidCSN	 		UINT64CONST(0x1)
-#define FrozenXidCSN		 	UINT64CONST(0x2)
-#define InDoubtXidCSN	 		UINT64CONST(0x3)
-#define FirstNormalXidCSN 		UINT64CONST(0x4)
+#define InProgressCSN	 	UINT64CONST(0x0)
+#define AbortedCSN	 		UINT64CONST(0x1)
+#define FrozenCSN		 	UINT64CONST(0x2)
+#define InDoubtCSN	 		UINT64CONST(0x3)
+#define UnclearCSN	 		UINT64CONST(0x4)
+#define FirstNormalCSN 		UINT64CONST(0x5)
 
-#define XidCSNIsInProgress(csn)	((csn) == InProgressXidCSN)
-#define XidCSNIsAborted(csn)		((csn) == AbortedXidCSN)
-#define XidCSNIsFrozen(csn)		((csn) == FrozenXidCSN)
-#define XidCSNIsInDoubt(csn)		((csn) == InDoubtXidCSN)
-#define XidCSNIsNormal(csn)		((csn) >= FirstNormalXidCSN)
+#define CSNIsInProgress(csn)	((csn) == InProgressCSN)
+#define CSNIsAborted(csn)		((csn) == AbortedCSN)
+#define CSNIsFrozen(csn)		((csn) == FrozenCSN)
+#define CSNIsInDoubt(csn)		((csn) == InDoubtCSN)
+#define CSNIsUnclear(csn)		((csn) == UnclearCSN)
+#define CSNIsNormal(csn)		((csn) >= FirstNormalCSN)
 
 
 extern int csn_snapshot_defer_time;
@@ -47,11 +49,11 @@ extern void CSNSnapshotStartup(TransactionId oldestActiveXID);
 extern void CSNSnapshotMapXmin(SnapshotCSN snapshot_csn);
 extern TransactionId CSNSnapshotToXmin(SnapshotCSN snapshot_csn);
 
-extern SnapshotCSN GenerateCSN(bool locked);
+extern SnapshotCSN GenerateCSN(bool locked, CSN assign);
 
 extern bool XidInvisibleInCSNSnapshot(TransactionId xid, Snapshot snapshot);
 
-extern XidCSN TransactionIdGetXidCSN(TransactionId xid);
+extern CSN TransactionIdGetCSN(TransactionId xid);
 
 extern void CSNSnapshotAbort(PGPROC *proc, TransactionId xid, int nsubxids,
 								TransactionId *subxids);
@@ -59,7 +61,7 @@ extern void CSNSnapshotPrecommit(PGPROC *proc, TransactionId xid, int nsubxids,
 									TransactionId *subxids);
 extern void CSNSnapshotCommit(PGPROC *proc, TransactionId xid, int nsubxids,
 									TransactionId *subxids);
-extern void CSNSnapshotAssignCsnCurrent(SnapshotCSN snapshot_csn);
+extern void CSNSnapshotAssignCurrent(SnapshotCSN snapshot_csn);
 extern SnapshotCSN CSNSnapshotPrepareCurrent(void);
 extern void CSNSnapshotSync(SnapshotCSN remote_csn);
 

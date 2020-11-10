@@ -11,7 +11,7 @@ my $node = get_new_node('csntest');
 $node->init;
 $node->append_conf('postgresql.conf', qq{
 					enable_csn_snapshot = on
-					csn_snapshot_defer_time = 20
+					csn_snapshot_defer_time = 10
 					max_prepared_transactions = 10
 					});
 $node->start;
@@ -29,7 +29,7 @@ my $test_snapshot = $node->safe_psql('postgres', 'select pg_csn_snapshot_export(
 $node->safe_psql('postgres', 'insert into t1 values(2,1)');
 
 my $count1 = $node->safe_psql('postgres', "select count(*) from t1");
-is($count1, '2', 'Get right number in nomal query');
+is($count1, '2', 'Get right number in normal query');
 my $count2 = $node->safe_psql('postgres', "
 			begin transaction isolation level repeatable read;
 			select pg_csn_snapshot_import($test_snapshot);
