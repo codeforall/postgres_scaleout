@@ -34,6 +34,7 @@
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
+#include "access/csn_log.h"
 
 static MemoryContext pendingOpsCxt; /* context for the pending ops state  */
 
@@ -118,6 +119,10 @@ static const SyncOps syncsw[] = {
 	/* pg_multixact/members */
 	[SYNC_HANDLER_MULTIXACT_MEMBER] = {
 		.sync_syncfiletag = multixactmemberssyncfiletag
+	},
+	/* pg_csnlog */
+	[SYNC_HANDLER_CSNLOG] = {
+		.sync_syncfiletag = csnlogsyncfiletag
 	}
 };
 

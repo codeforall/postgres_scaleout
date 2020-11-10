@@ -24,6 +24,7 @@
 
 #include "access/clog.h"
 #include "access/commit_ts.h"
+#include "access/csn_log.h"
 #include "access/fdwxact.h"
 #include "access/heaptoast.h"
 #include "access/multixact.h"
@@ -5346,6 +5347,7 @@ BootStrapXLOG(void)
 
 	/* Bootstrap the commit log, too */
 	BootStrapCLOG();
+	BootStrapCSNLog();
 	BootStrapCommitTs();
 	BootStrapSUBTRANS();
 	BootStrapMultiXact();
@@ -7070,7 +7072,9 @@ StartupXLOG(void)
 			 * maintained during recovery and need not be started yet.
 			 */
 			StartupCLOG();
+			StartupCSNLog(oldestActiveXID);
 			StartupSUBTRANS(oldestActiveXID);
+			CSNSnapshotStartup(oldestActiveXID);
 
 			/*
 			 * If we're beginning at a shutdown checkpoint, we know that
@@ -7893,7 +7897,9 @@ StartupXLOG(void)
 	if (standbyState == STANDBY_DISABLED)
 	{
 		StartupCLOG();
+		StartupCSNLog(oldestActiveXID);
 		StartupSUBTRANS(oldestActiveXID);
+		CSNSnapshotStartup(oldestActiveXID);
 	}
 
 	/*
@@ -9113,7 +9119,10 @@ CreateCheckPoint(int flags)
 	 * StartupSUBTRANS hasn't been called yet.
 	 */
 	if (!RecoveryInProgress())
+	{
 		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
+		TruncateCSNLog(GetOldestTransactionIdConsideredRunning());
+	}
 
 	/* Real work is done, but log and update stats before releasing lock. */
 	LogCheckpointEnd(false);
@@ -9198,6 +9207,7 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_START(flags);
 	CheckpointStats.ckpt_write_t = GetCurrentTimestamp();
 	CheckPointCLOG();
+	CheckPointCSNLog();
 	CheckPointCommitTs();
 	CheckPointSUBTRANS();
 	CheckPointMultiXact();
@@ -9486,7 +9496,10 @@ CreateRestartPoint(int flags)
 	 * this because StartupSUBTRANS hasn't been called yet.
 	 */
 	if (EnableHotStandby)
+	{
 		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
+		TruncateCSNLog(GetOldestTransactionIdConsideredRunning());
+	}
 
 	/* Real work is done, but log and update before releasing lock. */
 	LogCheckpointEnd(true);

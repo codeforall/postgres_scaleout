@@ -11028,4 +11028,12 @@
   proname => 'is_normalized', prorettype => 'bool', proargtypes => 'text text',
   prosrc => 'unicode_is_normalized' },
 
+# csn shnapshot handling
+{ oid => '4179', descr => 'export csn snapshot',
+  proname => 'pg_csn_snapshot_export', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => '', prosrc => 'pg_csn_snapshot_export' },
+{ oid => '4180', descr => 'import csn snapshot',
+  proname => 'pg_csn_snapshot_import', provolatile => 'v', proparallel => 'u',
+  prorettype => 'void', proargtypes => 'int8', prosrc => 'pg_csn_snapshot_import' }
+
 ]

@@ -32,6 +32,7 @@
 #include "access/commit_ts.h"
 #include "access/fdwxact.h"
 #include "access/gin.h"
+#include "access/csn_snapshot.h"
 #include "access/rmgr.h"
 #include "access/tableam.h"
 #include "access/transam.h"
@@ -1169,6 +1170,15 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&track_commit_timestamp,
 		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_csn_snapshot", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Enable csn-base snapshot."),
+			gettext_noop("Used to achieve REPEATEBLE READ isolation level for postgres_fdw transactions.")
+		},
+		&enable_csn_snapshot,
+		true, /* XXX: set true to simplify tesing. XXX2: Seems that RESOURCES_MEM isn't the best catagory */
 		NULL, NULL, NULL
 	},
 	{
@@ -2627,6 +2637,16 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&vacuum_defer_cleanup_age,
 		0, 0, 1000000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"csn_snapshot_defer_time", PGC_POSTMASTER, REPLICATION_PRIMARY,
+			gettext_noop("Minimal age of records which allowed to be vacuumed, in seconds."),
+			NULL
+		},
+		&csn_snapshot_defer_time,
+		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 

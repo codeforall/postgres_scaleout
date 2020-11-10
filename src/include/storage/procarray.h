@@ -94,4 +94,6 @@ extern void ProcArrayGetReplicationSlotXmin(TransactionId *xmin,
 extern void ProcArraySetFdwXactUnresolvedXmin(TransactionId xmin);
 extern TransactionId ProcArrayGetFdwXactUnresolvedXmin(void);
 
+extern void ProcArraySetCSNSnapshotXmin(TransactionId xmin);
+extern TransactionId ProcArrayGetCSNSnapshotXmin(void);
 #endif							/* PROCARRAY_H */

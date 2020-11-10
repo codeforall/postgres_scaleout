@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "access/commit_ts.h"
+#include "access/csn_snapshot.h"
 #include "access/fdwxact.h"
 #include "access/fdwxact_launcher.h"
 #include "access/multixact.h"
@@ -1465,6 +1466,14 @@ RecordTransactionCommit(void)
 
 	/* Reset XactLastRecEnd until the next transaction writes something */
 	XactLastRecEnd = 0;
+
+	/*
+	 * Mark our transaction as InDoubt in CsnLog and get ready for
+	 * commit.
+	 */
+	if (markXidCommitted)
+		CSNSnapshotPrecommit(MyProc, xid, nchildren, children);
+
 cleanup:
 	/* Clean up local data */
 	if (rels)
@@ -1725,6 +1734,11 @@ RecordTransactionAbort(bool isSubXact)
 	 * we'd be assumed to have aborted anyway.
 	 */
 	TransactionIdAbortTree(xid, nchildren, children);
+
+	/*
+	 * Mark our transaction as Aborted in CsnLog.
+	 */
+	CSNSnapshotAbort(MyProc, xid, nchildren, children);
 
 	END_CRIT_SECTION();
 
@@ -2218,6 +2232,21 @@ CommitTransaction(void)
 	 * RecordTransactionCommit.
 	 */
 	ProcArrayEndTransaction(MyProc, latestXid);
+
+	/*
+	 * Stamp our transaction with XidCSN in CsnLog.
+	 * Should be called after ProcArrayEndTransaction, but before releasing
+	 * transaction locks.
+	 */
+	if (!is_parallel_worker)
+	{
+		TransactionId  xid = GetTopTransactionIdIfAny();
+		TransactionId *subxids;
+		int			   nsubxids;
+
+		nsubxids = xactGetCommittedChildren(&subxids);
+		CSNSnapshotCommit(MyProc, xid, nsubxids, subxids);
+	}
 
 	/*
 	 * This is all post-commit cleanup.  Note that if an error is raised here,
