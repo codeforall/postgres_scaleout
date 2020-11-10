@@ -2,7 +2,12 @@ PostgreSQL Database Management System
 =====================================
 
 This directory contains the source code distribution of the PostgreSQL
-database management system.
+database management system with in-discussion patches for atomic commit
+and global snapshots applied on top of the master branch.
+
+Its a POC to show that GTM "global transaction manager" and
+Global snapshot features as purposed in the community can work along-
+side each other.
 
 PostgreSQL is an advanced object-relational database management system
 that supports an extended subset of the SQL standard, including
