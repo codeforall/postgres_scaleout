@@ -52,6 +52,7 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/csn_log.h"
 #include "catalog/catalog.h"
 #include "datatype/timestamp.h"
 #include "lib/pairingheap.h"
@@ -2246,14 +2247,14 @@ XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot)
 
 	if (snapshot->imported_snapshot_csn)
 	{
-		Assert(enable_csn_snapshot);
+		Assert(get_csnlog_status());
 		/* No point to using snapshot info except CSN */
 		return XidInvisibleInCSNSnapshot(xid, snapshot);
 	}
 
 	in_snapshot = XidInLocalMVCCSnapshot(xid, snapshot);
 
-	if (!enable_csn_snapshot)
+	if (!get_csnlog_status())
 	{
 		Assert(XidCSNIsFrozen(snapshot->snapshot_csn));
 		return in_snapshot;
@@ -2417,7 +2418,7 @@ XidInLocalMVCCSnapshot(TransactionId xid, Snapshot snapshot)
 SnapshotCSN
 ExportCSNSnapshot()
 {
-	if (!enable_csn_snapshot)
+	if (!get_csnlog_status())
 		ereport(ERROR,
 			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 			 errmsg("could not export csn snapshot"),
@@ -2450,7 +2451,7 @@ ImportCSNSnapshot(SnapshotCSN snapshot_csn)
 {
 	volatile TransactionId xmin;
 
-	if (!enable_csn_snapshot)
+	if (!get_csnlog_status())
 		ereport(ERROR,
 			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 			 errmsg("could not import csn snapshot"),

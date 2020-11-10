@@ -2391,7 +2391,7 @@ GetSnapshotData(Snapshot snapshot)
 	 * Take XidCSN under ProcArrayLock so the snapshot stays
 	 * synchronized.
 	 */
-	if (enable_csn_snapshot)
+	if (!snapshot->takenDuringRecovery && get_csnlog_status())
 		xid_csn = GenerateCSN(false);
 	LWLockRelease(ProcArrayLock);
 

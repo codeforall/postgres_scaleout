@@ -6809,6 +6809,9 @@ StartupXLOG(void)
 	if (ControlFile->track_commit_timestamp)
 		StartupCommitTs();
 
+	if(ControlFile->enable_csn_snapshot)
+		StartupCSN();
+
 	/*
 	 * Recover knowledge about replay progress of known replication partners.
 	 */
@@ -7941,6 +7944,7 @@ StartupXLOG(void)
 	 * commit timestamp.
 	 */
 	CompleteCommitTsInitialization();
+	CompleteCSNInitialization();
 
 	/*
 	 * All done with end-of-recovery actions.
@@ -9803,7 +9807,7 @@ XLogReportParameters(void)
 		}
 
 		if (enable_csn_snapshot != ControlFile->enable_csn_snapshot)
-				set_xmin_for_csn();
+			prepare_csn_env(enable_csn_snapshot);
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
 		ControlFile->MaxConnections = MaxConnections;
@@ -10250,6 +10254,8 @@ xlog_redo(XLogReaderState *record)
 		CommitTsParameterChange(xlrec.track_commit_timestamp,
 								ControlFile->track_commit_timestamp);
 		ControlFile->track_commit_timestamp = xlrec.track_commit_timestamp;
+		CSNlogParameterChange(xlrec.enable_csn_snapshot,
+								ControlFile->enable_csn_snapshot);
 		ControlFile->enable_csn_snapshot = xlrec.enable_csn_snapshot;
 
 		UpdateControlFile();
