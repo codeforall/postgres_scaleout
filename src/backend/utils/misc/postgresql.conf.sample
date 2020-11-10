@@ -304,6 +304,8 @@
 				# (change requires restart)
 #enable_csn_snapshot = off	# enable csn base snapshot
 				# (change requires restart)
+#enable_global_snapshot = off # enable global snapshots
+				# requires csn snapshots to be enabled
 
 # - Primary Server -
 

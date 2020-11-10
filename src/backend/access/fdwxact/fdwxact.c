@@ -96,6 +96,7 @@
 #include "access/resolver_internal.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/csn_log.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "foreign/fdwapi.h"
@@ -120,6 +121,8 @@
 	(((FdwXactParticipant *)(fdw_part))->commit_foreign_xact_fn != NULL)
 #define ServerSupportTwophaseCommit(fdw_part) \
 	(((FdwXactParticipant *)(fdw_part))->prepare_foreign_xact_fn != NULL)
+#define SeverSupportGlobalSnapshots(fdw_part) \
+(((FdwXactParticipant *)(fdw_part))->prepare_foreign_CSN_snapshot_fn != NULL)
 
 /* Foreign twophase commit is enabled and requested by user */
 #define IsForeignTwophaseCommitRequested() \
@@ -164,12 +167,17 @@ typedef struct FdwXactParticipant
 
 	/* true if modified the data on the server */
 	bool		modified;
+	CSN         csn;
+	CSN         global_csn;
 
 	/* Callbacks for foreign transaction */
 	CommitForeignTransaction_function commit_foreign_xact_fn;
 	RollbackForeignTransaction_function rollback_foreign_xact_fn;
 	PrepareForeignTransaction_function prepare_foreign_xact_fn;
 	GetPrepareId_function get_prepareid_fn;
+	/* Callbacks for global snapshots */
+	PrepareForeignCSNSnapshot_function prepare_foreign_CSN_snapshot_fn;
+	AssignGlobalCSN_function assign_global_CSN_fn;
 } FdwXactParticipant;
 
 /*
@@ -190,6 +198,7 @@ static bool fdwXactExitRegistered = false;
 int			max_prepared_foreign_xacts = 0;
 int			max_foreign_xact_resolvers = 0;
 int			foreign_twophase_commit = FOREIGN_TWOPHASE_COMMIT_DISABLED;
+bool		enable_global_snapshot = false;
 
 static void AtProcExit_FdwXact(int code, Datum arg);
 static void FdwXactPrepareForeignTransactions(TransactionId xid, bool prepare_all);
@@ -381,10 +390,14 @@ create_fdwxact_participant(Oid serverid, Oid userid, FdwRoutine *routine)
 	fdw_part->usermapping = user_mapping;
 	fdw_part->fdwxact_id = NULL;
 	fdw_part->modified = false;
+	fdw_part->csn = 0;
+	fdw_part->global_csn = 0;
 	fdw_part->commit_foreign_xact_fn = routine->CommitForeignTransaction;
 	fdw_part->rollback_foreign_xact_fn = routine->RollbackForeignTransaction;
 	fdw_part->prepare_foreign_xact_fn = routine->PrepareForeignTransaction;
 	fdw_part->get_prepareid_fn = routine->GetPrepareId;
+	fdw_part->prepare_foreign_CSN_snapshot_fn = routine->PrepareForeignCSNSnapshot;
+	fdw_part->assign_global_CSN_fn = routine->AssignGlobalCSN;
 
 	return fdw_part;
 }
@@ -524,6 +537,8 @@ static void
 FdwXactPrepareForeignTransactions(TransactionId xid, bool prepare_all)
 {
 	ListCell   *lc;
+	CSN max_csn = 0;
+	CSN my_csn = 0;
 
 	Assert(FdwXactParticipants != NIL);
 	Assert(TransactionIdIsValid(xid));
@@ -575,11 +590,43 @@ FdwXactPrepareForeignTransactions(TransactionId xid, bool prepare_all)
 		state.fdwxact_id = fdw_part->fdwxact_id;
 		fdw_part->prepare_foreign_xact_fn(&state);
 
+		if (is_global_snapshot_enabled() &&
+			SeverSupportGlobalSnapshots(fdw_part))
+		{
+			fdw_part->csn = fdw_part->prepare_foreign_CSN_snapshot_fn(&state);
+			if (max_csn < fdw_part->csn)
+				max_csn = fdw_part->csn;
+		}
+
 		/* succeeded, update status */
 		SpinLockAcquire(&fdwxact->mutex);
 		fdwxact->status = FDWXACT_STATUS_PREPARED;
 		SpinLockRelease(&fdwxact->mutex);
 	}
+
+    if (!is_global_snapshot_enabled())
+		return;
+
+	/* before finishing prepare, assign the max csn */
+	my_csn = CSNSnapshotPrepareCurrent();
+	if (max_csn < my_csn)
+		max_csn = my_csn;
+	/* TODO: do we need to xlog max_csn? */
+	/* Loop over the foreign connections and set max csn */
+	foreach(lc, FdwXactParticipants)
+	{
+		FdwXactParticipant *fdw_part = (FdwXactParticipant *) lfirst(lc);
+		if (SeverSupportGlobalSnapshots(fdw_part) && fdw_part->csn)
+		{
+			FdwXactRslvState state;
+			state.server = fdw_part->server;
+			state.usermapping = fdw_part->usermapping;
+			state.fdwxact_id = pstrdup(fdw_part->fdwxact_id);
+			fdw_part->assign_global_CSN_fn(&state, max_csn);
+		}
+	}
+	/* Assign global CSN to local transaction */
+	CSNSnapshotAssignCurrent(max_csn);
 }
 
 /*
@@ -889,7 +936,6 @@ FdwXactParticipantEndTransaction(FdwXactParticipant *fdw_part, bool commit)
 	state.usermapping = fdw_part->usermapping;
 	state.fdwxact_id = NULL;
 	state.flags = FDWXACT_FLAG_ONEPHASE;
-
 	if (commit)
 	{
 		fdw_part->commit_foreign_xact_fn(&state);
@@ -1274,7 +1320,6 @@ FdwXactResolveOneFdwXact(FdwXact fdwxact)
 	state.usermapping = GetUserMapping(fdwxact->userid, fdwxact->serverid);
 	state.fdwxact_id = fdwxact->fdwxact_id;
 	state.flags = 0;
-
 	if (fdwxact->status == FDWXACT_STATUS_COMMITTING)
 	{
 		routine->CommitForeignTransaction(&state);
@@ -2189,4 +2234,9 @@ pg_remove_foreign_xact(PG_FUNCTION_ARGS)
 	LWLockRelease(FdwXactLock);
 
 	PG_RETURN_BOOL(true);
+}
+
+bool is_global_snapshot_enabled(void)
+{
+	return get_csnlog_status() && enable_global_snapshot;
 }

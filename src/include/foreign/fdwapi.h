@@ -176,6 +176,9 @@ typedef void (*CommitForeignTransaction_function) (FdwXactRslvState *frstate);
 typedef void (*RollbackForeignTransaction_function) (FdwXactRslvState *frstate);
 typedef char *(*GetPrepareId_function) (TransactionId xid, Oid serverid,
 										Oid userid, int *prep_id_len);
+/* CSN based global snapshot functions */
+typedef uint64 (*PrepareForeignCSNSnapshot_function) (FdwXactRslvState *frstate);
+typedef void (*AssignGlobalCSN_function) (FdwXactRslvState *frstate, CSN max_csn);
 
 /*
  * FdwRoutine is the struct returned by a foreign-data wrapper's handler
@@ -259,6 +262,8 @@ typedef struct FdwRoutine
 	RollbackForeignTransaction_function RollbackForeignTransaction;
 	PrepareForeignTransaction_function PrepareForeignTransaction;
 	GetPrepareId_function GetPrepareId;
+	PrepareForeignCSNSnapshot_function PrepareForeignCSNSnapshot;
+	AssignGlobalCSN_function AssignGlobalCSN;
 } FdwRoutine;
 
 

@@ -564,6 +564,10 @@ postgres_fdw_handler(PG_FUNCTION_ARGS)
 	routine->RollbackForeignTransaction = postgresRollbackForeignTransaction;
 	routine->PrepareForeignTransaction = postgresPrepareForeignTransaction;
 
+	/* Global CSN snapshot functions */
+	routine->PrepareForeignCSNSnapshot = postgresPrepareForeignCSNSnapshot;
+	routine->AssignGlobalCSN = postgresAssignGlobalCSN;
+
 	PG_RETURN_POINTER(routine);
 }
 

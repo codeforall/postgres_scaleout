@@ -28,6 +28,7 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
+#include "utils/snapmgr.h"
 
 /*
  * Connection cache hash table entry
@@ -61,6 +62,7 @@ typedef struct ConnCacheEntry
 	bool		modified;		/* true if data on the foreign server is modified */
 	uint32		server_hashvalue;	/* hash value of foreign server OID */
 	uint32		mapping_hashvalue;	/* hash value of user mapping OID */
+	CSN			imported_csn;
 } ConnCacheEntry;
 
 /*
@@ -99,7 +101,7 @@ static void pgfdw_cleanup_after_transaction(ConnCacheEntry *entry);
 static ConnCacheEntry *GetConnectionCacheEntry(Oid umid);
 static void pgfdw_end_prepared_xact(ConnCacheEntry *entry, UserMapping *usermapping,
 									char *fdwxact_id, bool is_commit);
-
+static void SyncCSNSnapshot(ConnCacheEntry *entry);
 /*
  * Get a PGconn which can be used to execute queries on the remote PostgreSQL
  * server with the user's authorization.  A new connection is established
@@ -291,6 +293,7 @@ make_new_connection(ConnCacheEntry *entry, UserMapping *user)
 	entry->changing_xact_state = false;
 	entry->invalidated = false;
 	entry->modified = false;
+	entry->imported_csn = InvalidCSN;
 	entry->server_hashvalue =
 		GetSysCacheHashValue1(FOREIGNSERVEROID,
 							  ObjectIdGetDatum(server->serverid));
@@ -589,6 +592,11 @@ begin_remote_xact(ConnCacheEntry *entry, UserMapping *user)
 		elog(DEBUG3, "starting remote transaction on connection %p",
 			 entry->conn);
 
+		if (is_global_snapshot_enabled() && (!IsolationUsesXactSnapshot() ||
+                                          IsolationIsSerializable()))
+            ereport(ERROR,
+                    (errmsg("Global snapshots are only supported with REPEATABLE READ isolation level")));
+
 		/* Register the foreign server to the transaction */
 		FdwXactRegisterXact(user->serverid, user->userid, false);
 
@@ -602,6 +610,11 @@ begin_remote_xact(ConnCacheEntry *entry, UserMapping *user)
 		entry->modified = false;
 		entry->changing_xact_state = false;
 	}
+	/*
+	 * if global snapshot is enabled we need
+	 * to import the CSN in the foreign transaction
+	 */
+	SyncCSNSnapshot(entry);
 
 	/*
 	 * If we're in a subtransaction, stack up savepoints to match our level.
@@ -617,6 +630,35 @@ begin_remote_xact(ConnCacheEntry *entry, UserMapping *user)
 		do_sql_command(entry->conn, sql);
 		entry->xact_depth++;
 		entry->changing_xact_state = false;
+	}
+}
+
+static void
+SyncCSNSnapshot(ConnCacheEntry *entry)
+{
+	char sql[128];
+	PGresult   *res;
+	CSN	 csn;
+
+	if (!is_global_snapshot_enabled())
+		return;
+
+	csn = ExportCSNSnapshot();
+
+	if (csn != entry->imported_csn)
+	{
+		entry->imported_csn = csn;
+		snprintf(sql, sizeof(sql),
+			"SELECT pg_csn_snapshot_import("UINT64_FORMAT")",entry->imported_csn);
+
+		entry->changing_xact_state = true;
+		res = pgfdw_exec_query(entry->conn, sql);
+		entry->changing_xact_state = false;
+
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+				ereport(ERROR,
+							(errmsg("failed to import CSN snapshot in remote server")));
+		PQclear(res);
 	}
 }
 
@@ -1329,6 +1371,50 @@ postgresRollbackForeignTransaction(FdwXactRslvState *frstate)
 	return;
 }
 
+static CSN
+pgfdw_prepare_remote_csn_snapshot(ConnCacheEntry *entry, char *fdwxact_id)
+{
+	PGresult	*res;
+	CSN		csn = 0;
+	char 	*resp;
+	char	sql[256];
+
+	snprintf(sql, sizeof(sql),
+		"SELECT pg_csn_snapshot_prepare('%s')",fdwxact_id);
+
+	/* Do prepare foreign transaction */
+	entry->changing_xact_state = true;
+	res = pgfdw_exec_query(entry->conn, sql);
+	entry->changing_xact_state = false;
+
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		ereport(ERROR,
+				(errmsg("could not prepare CSN snapshot with ID %s",fdwxact_id)));
+	resp = PQgetvalue(res, 0, 0);
+
+	if (resp == NULL || (*resp) == '\0' ||
+			sscanf(resp, UINT64_FORMAT, &csn) != 1)
+		ereport(ERROR,
+				(errmsg("pg_csn_snapshot_prepare returned invalid data for prepared transaction with ID %s",
+							   fdwxact_id)));
+	return csn;
+}
+
+static void
+pgfdw_assign_global_snapshot_to_xact(ConnCacheEntry *entry, char *fdwxact_id, CSN csn)
+{
+	PGresult	*res;
+	char	sql[256];
+
+	snprintf(sql, sizeof(sql),
+			 "SELECT pg_csn_snapshot_assign('%s', "UINT64_FORMAT")", fdwxact_id, csn);
+	res = pgfdw_exec_query(entry->conn, sql);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		ereport(ERROR,
+				(errmsg("could not assign global CSN to prepared transaction with ID %s",
+						fdwxact_id)));
+	PQclear(res);
+}
 /*
  * Prepare a transaction on foreign server.
  */
@@ -1377,6 +1463,7 @@ pgfdw_cleanup_after_transaction(ConnCacheEntry *entry)
 	entry->xact_depth = 0;
 	entry->have_prep_stmt = false;
 	entry->have_error  = false;
+	entry->imported_csn = InvalidCSN;
 
 	/*
 	 * If the connection isn't in a good idle state, discard it to
@@ -1394,6 +1481,44 @@ pgfdw_cleanup_after_transaction(ConnCacheEntry *entry)
 
 	/* Also reset cursor numbering for next transaction */
 	cursor_number = 0;
+}
+
+CSN
+postgresPrepareForeignCSNSnapshot(FdwXactRslvState *frstate)
+{
+	uint64 csn;
+	ConnCacheEntry *entry = NULL;
+	/*
+	 * The foreign transaction must already have been prepared
+	 * and we might not have a connection to it. So We get a connection
+	 * but don't start transaction.
+	 */
+	entry = GetConnectionCacheEntry(frstate->usermapping->umid);
+	csn = pgfdw_prepare_remote_csn_snapshot(entry, frstate->fdwxact_id);
+	/* Cleanup transaction status */
+	pgfdw_cleanup_after_transaction(entry);
+	return csn;
+}
+
+void
+postgresAssignGlobalCSN(FdwXactRslvState *frstate, CSN max_csn)
+{
+	ConnCacheEntry *entry = NULL;
+	/*
+	 * The foreign transaction must already have been prepared
+	 * and we might not have a connection to it. So We get a connection
+	 * but don't start transaction.
+	 */
+
+	entry = GetConnectionCacheEntry(frstate->usermapping->umid);
+	pgfdw_assign_global_snapshot_to_xact(entry, frstate->fdwxact_id, max_csn);
+
+	elog(DEBUG1, "global CSN "UINT64_FORMAT" assigned to prepared foreign transaction with ID %s",
+		 max_csn, frstate->fdwxact_id);
+
+	/* Cleanup transaction status */
+	pgfdw_cleanup_after_transaction(entry);
+
 }
 
 /*

@@ -142,6 +142,8 @@ extern void pgfdw_report_error(int elevel, PGresult *res, PGconn *conn,
 extern void postgresCommitForeignTransaction(FdwXactRslvState *frstate);
 extern void postgresRollbackForeignTransaction(FdwXactRslvState *frstate);
 extern void postgresPrepareForeignTransaction(FdwXactRslvState *frstate);
+extern void postgresAssignGlobalCSN(FdwXactRslvState *frstate, CSN max_csn);
+extern CSN postgresPrepareForeignCSNSnapshot(FdwXactRslvState *frstate);
 
 /* in option.c */
 extern int	ExtractConnectionOptions(List *defelems,

@@ -17,8 +17,10 @@
 #include "storage/s_lock.h"
 
 /* Flag passed to FDW transaction management APIs */
-#define FDWXACT_FLAG_ONEPHASE		0x01	/* transaction can commit/rollback
-											 * without preparation */
+#define FDWXACT_FLAG_ONEPHASE			0x01	/* transaction can commit/rollback
+												 * without preparation */
+#define FDWXACT_FLAG_USE_GLOBAL_CSN		0x02	/* transaction pushes a global CSN value
+												 * to all transaction participants */
 
 /* Enum for foreign_twophase_commit parameter */
 typedef enum
@@ -116,6 +118,7 @@ extern int	max_foreign_xact_resolvers;
 extern int	foreign_xact_resolution_retry_interval;
 extern int	foreign_xact_resolver_timeout;
 extern int	foreign_twophase_commit;
+extern bool enable_global_snapshot;
 
 /* Function declarations */
 extern Size FdwXactShmemSize(void);
@@ -133,5 +136,7 @@ extern void RecreateFdwXactFile(Oid dbid, TransactionId xid, Oid serverid,
 extern void RestoreFdwXactData(void);
 extern void RecoverFdwXacts(void);
 extern TransactionId PrescanFdwXacts(TransactionId oldestActiveXid);
+
+extern bool is_global_snapshot_enabled(void);
 
 #endif /* FDWXACT_H */

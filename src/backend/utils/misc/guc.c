@@ -1182,6 +1182,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_global_snapshot", PGC_POSTMASTER, FOREIGN_TRANSACTION,
+			gettext_noop("Enable csn-base global snapshots."),
+			gettext_noop("Used to achieve REPEATEBLE READ isolation level for postgres_fdw transactions.")
+		},
+		&enable_global_snapshot,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"ssl", PGC_SIGHUP, CONN_AUTH_SSL,
 			gettext_noop("Enables SSL connections."),
 			NULL
